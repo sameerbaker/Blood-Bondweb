@@ -16,6 +16,10 @@ import BadgesPage from './pages/BadgesPage';
 import ProfilePage from './pages/ProfilePage';
 import EligibilityPage from './pages/EligibilityPage';
 import AdminUsersPage from './pages/AdminUsersPage';
+import MonetaryDonationsPage from './pages/MonetaryDonationsPage';
+import RatingsPage from './pages/RatingsPage';
+import EventsPage from './pages/EventsPage';
+import ContactUsPage from './pages/ContactUsPage';
 import NotFoundPage from './pages/NotFoundPage';
 import ForbiddenPage from './pages/ForbiddenPage';
 
@@ -97,6 +101,31 @@ export default function App() {
               </ProtectedRoute>
             }
           />
+          <Route
+            path="/monetary"
+            element={
+              <ProtectedRoute>
+                <MonetaryDonationsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/ratings"
+            element={
+              <ProtectedRoute>
+                <RatingsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/events"
+            element={
+              <ProtectedRoute>
+                <EventsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route path="/contact" element={<ContactUsPage />} />
 
           {/* Utility */}
           <Route path="/forbidden" element={<ForbiddenPage />} />

@@ -7,3 +7,4 @@ export { adminApi } from './admin';
 export { badgesApi } from './badges';
 export { ratingsApi } from './ratings';
 export { monetaryApi } from './monetary';
+export { eventsApi } from './events';

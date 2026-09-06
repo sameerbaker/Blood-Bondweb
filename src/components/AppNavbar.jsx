@@ -26,6 +26,9 @@ export default function AppNavbar() {
                 <Nav.Link as={NavLink} to="/blood-banks">Blood Banks</Nav.Link>
                 <Nav.Link as={NavLink} to="/requests">Requests</Nav.Link>
                 <Nav.Link as={NavLink} to="/donations">Donations</Nav.Link>
+                <Nav.Link as={NavLink} to="/monetary">Donate Money</Nav.Link>
+                <Nav.Link as={NavLink} to="/events">Events</Nav.Link>
+                <Nav.Link as={NavLink} to="/ratings">Reviews</Nav.Link>
                 <Nav.Link as={NavLink} to="/badges">Badges</Nav.Link>
                 {(role || '').toLowerCase() === 'admin' && (
                   <Nav.Link as={NavLink} to="/admin/users">Users</Nav.Link>
@@ -50,6 +53,7 @@ export default function AppNavbar() {
             </>
           ) : (
             <Nav className="ms-auto">
+              <Nav.Link as={Link} to="/contact">Contact</Nav.Link>
               <Nav.Link as={Link} to="/login">Login</Nav.Link>
               <Nav.Link as={Link} to="/register">Register</Nav.Link>
             </Nav>
