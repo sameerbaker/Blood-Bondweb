@@ -39,7 +39,7 @@ export default function AppLayout() {
             <Col md={4}>
               <h6 className="text-uppercase small fw-bold">Get in touch</h6>
               <ul className="list-unstyled small text-muted">
-                <li>📧 support@bloodbond.com</li>
+                <li>📧 sameer.m.baker@gmail.com</li>
                 <li>📞 +970 599 000 000</li>
                 <li>📍 Ramallah, Palestine</li>
                 <li className="mt-2"><Link to="/contact">Contact form →</Link></li>
@@ -48,7 +48,7 @@ export default function AppLayout() {
           </Row>
           <hr className="my-3" />
           <div className="text-center text-muted small">
-            © {new Date().getFullYear()} Blood Bond &middot; Built with React + Bootstrap
+            © {new Date().getFullYear()} Blood Bond &middot;
           </div>
         </Container>
       </footer>
