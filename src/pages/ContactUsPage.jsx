@@ -8,7 +8,7 @@ import PageHeader from '../components/PageHeader';
 // Frontend-only contact form.
 // - If you wire up a backend endpoint later, change `submit()` to call it.
 // - Until then we open the user's mail client with the message pre-filled.
-const CONTACT_EMAIL = 'support@bloodbond.com';
+const CONTACT_EMAIL = 'sameer.m.baker@gmail.com';
 
 const SUBJECTS = [
   { value: 'general',  label: 'General question' },
