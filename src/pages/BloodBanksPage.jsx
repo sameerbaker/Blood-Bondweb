@@ -183,7 +183,7 @@ export default function BloodBanksPage() {
         </Alert>
       )}
 
-      {isAdmin && (
+      {/*isAdmin && (
         <Alert variant="info" className="small">
           <strong>👑 Admin tip:</strong> You can <strong>Approve / Reject</strong> any bank.
           For <strong>editing details or updating inventory</strong>, the backend currently
@@ -191,7 +191,7 @@ export default function BloodBanksPage() {
           log in as the bank's manager or update the backend's
           <code>BloodBankService.IsAdminOrManager</code> check.
         </Alert>
-      )}
+      )*/}
 
       {loading ? (
         <Loading label="Loading blood banks…" />
