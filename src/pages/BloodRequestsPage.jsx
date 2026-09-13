@@ -1,20 +1,32 @@
 import { useEffect, useState } from 'react';
-import { Container, Row, Col, Card, Form, Button, Table, Badge, Modal, Alert, Spinner } from 'react-bootstrap';
+import {
+  Container, Row, Col, Card, Form, Button, Table, Badge, Modal, Alert, Spinner, Nav, InputGroup,
+} from 'react-bootstrap';
 import toast from 'react-hot-toast';
 import PageHeader from '../components/PageHeader';
 import Loading from '../components/Loading';
 import EmptyState from '../components/EmptyState';
 import { bloodRequestsApi } from '../api';
 import { apiErrorMessage } from '../utils/error';
-import { BLOOD_TYPES, URGENCY_LEVELS, bloodTypeLabel, urgencyMeta } from '../context/constants';
+import {
+  BLOOD_TYPES, URGENCY_LEVELS, bloodTypeLabel, urgencyMeta, requestStatusMeta, formatDate,
+} from '../context/constants';
+import { useAuth } from '../context/AuthContext';
 
 const empty = { bloodType: 0, unitsNeeded: 1, urgencyLevel: 1, city: '', notes: '' };
 
 export default function BloodRequestsPage() {
+  const { role } = useAuth();
+  const userRole = (role || '').toLowerCase();
+  const canManage = userRole === 'admin' || userRole === 'bloodbankmanager';
+
+  // 'mine' = my requests, 'active' = open by city filter
+  const [tab, setTab] = useState('mine');
+  const [city, setCity] = useState('');
+
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [filterCity, setFilterCity] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(empty);
   const [saving, setSaving] = useState(false);
@@ -23,7 +35,9 @@ export default function BloodRequestsPage() {
     setLoading(true);
     setError('');
     try {
-      const res = await bloodRequestsApi.mine();
+      const res = tab === 'active'
+        ? city ? await bloodRequestsApi.activeByCity(city) : { data: [] }
+        : await bloodRequestsApi.mine();
       setItems(Array.isArray(res.data) ? res.data : []);
     } catch (err) {
       setError(apiErrorMessage(err, 'Failed to load requests.'));
@@ -32,7 +46,7 @@ export default function BloodRequestsPage() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [tab]);
 
   const onCreate = async (e) => {
     e.preventDefault();
@@ -68,7 +82,7 @@ export default function BloodRequestsPage() {
   };
 
   const fulfill = async (id) => {
-    if (!confirm('Mark this request as fulfilled?')) return;
+    if (!confirm('Mark this request as fulfilled? This action should only be taken when the blood has been provided.')) return;
     try {
       await bloodRequestsApi.fulfill(id);
       toast.success('Request fulfilled.');
@@ -80,45 +94,72 @@ export default function BloodRequestsPage() {
 
   const notify = async (id) => {
     try {
-      await bloodRequestsApi.notify(id);
-      toast.success('Matching donors notified.');
+      const res = await bloodRequestsApi.notify(id);
+      const n = res.data?.notified ?? res.data?.Notified;
+      toast.success(n != null ? `Notified ${n} compatible donor(s).` : 'Matching donors notified.');
     } catch (err) {
       toast.error(apiErrorMessage(err, 'Notify failed.'));
     }
   };
 
-  const filtered = items.filter((r) => {
-    const c = r.city || r.City || '';
-    return !filterCity || c.toLowerCase().includes(filterCity.toLowerCase());
+  // Group + sort: pending first, then by urgency
+  const sorted = [...items].sort((a, b) => {
+    const aP = String(a.status ?? a.Status ?? '').toLowerCase() === 'pending' ? 0 : 1;
+    const bP = String(b.status ?? b.Status ?? '').toLowerCase() === 'pending' ? 0 : 1;
+    if (aP !== bP) return aP - bP;
+    return (b.urgencyLevel ?? b.UrgencyLevel ?? 0) - (a.urgencyLevel ?? a.UrgencyLevel ?? 0);
   });
 
   return (
     <Container>
       <PageHeader
         title="Blood Requests"
-        subtitle="Create and manage blood requests."
+        subtitle="Create and manage blood requests. Bank managers can fulfill them once blood is provided."
         actions={<Button variant="danger" onClick={() => setShowModal(true)}>+ New request</Button>}
       />
 
-      <Row className="g-3 mb-3">
-        <Col md={6}>
-          <Form.Control
-            placeholder="Filter by city…"
-            value={filterCity}
-            onChange={(e) => setFilterCity(e.target.value)}
-          />
-        </Col>
-        <Col md={6} className="text-md-end text-muted small">
-          {loading ? 'Loading…' : `${filtered.length} request(s)`}
-        </Col>
-      </Row>
+      <Card className="shadow-sm border-0 mb-3">
+        <Card.Body className="p-2">
+          <Nav variant="pills" activeKey={tab} onSelect={(k) => k && setTab(k)}>
+            <Nav.Item>
+              <Nav.Link eventKey="mine">📋 My requests</Nav.Link>
+            </Nav.Item>
+            <Nav.Item>
+              <Nav.Link eventKey="active">🌍 Active in city</Nav.Link>
+            </Nav.Item>
+          </Nav>
+        </Card.Body>
+      </Card>
+
+      {tab === 'active' && (
+        <Row className="g-2 mb-3">
+          <Col md={6}>
+            <InputGroup>
+              <InputGroup.Text>🏙️</InputGroup.Text>
+              <Form.Control
+                placeholder="Filter by city (e.g. Ramallah)…"
+                value={city}
+                onChange={(e) => setCity(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') load(); }}
+              />
+              <Button variant="danger" onClick={load}>Search</Button>
+            </InputGroup>
+          </Col>
+        </Row>
+      )}
 
       {error && <Alert variant="warning">{error}</Alert>}
 
       {loading ? (
         <Loading />
-      ) : filtered.length === 0 ? (
-        <EmptyState title="No requests yet" message="Click + New request to create one." />
+      ) : sorted.length === 0 ? (
+        <EmptyState
+          title={tab === 'active' ? 'No active requests' : 'No requests yet'}
+          message={tab === 'active'
+            ? (city ? `No pending requests in ${city}.` : 'Enter a city to find active requests.')
+            : 'Click + New request to create one.'}
+          icon="🩸"
+        />
       ) : (
         <Card className="shadow-sm border-0">
           <div className="table-responsive">
@@ -130,30 +171,39 @@ export default function BloodRequestsPage() {
                   <th>City</th>
                   <th>Urgency</th>
                   <th>Status</th>
+                  <th>Created</th>
                   <th className="text-end">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((r) => {
+                {sorted.map((r) => {
                   const id = r.id || r.Id;
                   const u = urgencyMeta(r.urgencyLevel ?? r.UrgencyLevel);
+                  const s = requestStatusMeta(r.status ?? r.Status);
                   return (
                     <tr key={id}>
                       <td><Badge bg="danger">{bloodTypeLabel(r.bloodType ?? r.BloodType)}</Badge></td>
                       <td>{r.unitsNeeded ?? r.UnitsNeeded}</td>
                       <td>{r.city || r.City || '—'}</td>
                       <td><Badge bg={u.variant}>{u.label}</Badge></td>
-                      <td>{r.status || r.Status || '—'}</td>
+                      <td><Badge bg={s.variant}>{s.label}</Badge></td>
+                      <td className="small text-muted">{formatDate(r.createdAt || r.CreatedAt)}</td>
                       <td className="text-end">
-                        <Button size="sm" variant="outline-primary" className="me-1" onClick={() => notify(id)}>
-                          Notify
-                        </Button>
-                        <Button size="sm" variant="outline-success" className="me-1" onClick={() => fulfill(id)}>
-                          Fulfill
-                        </Button>
-                        <Button size="sm" variant="outline-danger" onClick={() => cancel(id)}>
-                          Cancel
-                        </Button>
+                        {canManage && (
+                          <Button size="sm" variant="outline-primary" className="me-1" onClick={() => notify(id)}>
+                            Notify
+                          </Button>
+                        )}
+                        {canManage && s.label !== 'Fulfilled' && s.label !== 'Cancelled' && (
+                          <Button size="sm" variant="success" className="me-1" onClick={() => fulfill(id)}>
+                            ✓ Fulfill
+                          </Button>
+                        )}
+                        {s.label !== 'Cancelled' && s.label !== 'Fulfilled' && (
+                          <Button size="sm" variant="outline-danger" onClick={() => cancel(id)}>
+                            Cancel
+                          </Button>
+                        )}
                       </td>
                     </tr>
                   );

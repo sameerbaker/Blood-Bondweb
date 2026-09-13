@@ -33,6 +33,14 @@ export default function AppNavbar() {
                 {(role || '').toLowerCase() === 'admin' && (
                   <Nav.Link as={NavLink} to="/admin/users">Users</Nav.Link>
                 )}
+                {(role || '').toLowerCase() === 'admin' && (
+                  <Nav.Link as={NavLink} to="/admin/monetary">Donations</Nav.Link>
+                )}
+                
+               {/*(role || '').toLowerCase() === 'admin' && (
+                  <Nav.Link as={NavLink} to="/admin/diagnostic">🛠 Status</Nav.Link>
+                )*/}
+                
               </Nav>
               <Nav>
                 <NavDropdown

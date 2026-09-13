@@ -53,18 +53,28 @@ export function AuthProvider({ children }) {
     setLoading(true);
     try {
       const res = await authApi.login({ email, password });
-      // API returns token in various shapes — be liberal
+      // API returns the full user object including roles array.
+      // Example response: { userId, email, fullName, roles: ["Admin"], token, expiresAt }
       const data = res.data || {};
       const newToken = data.token || data.accessToken || data.jwt || data.Token;
-      const newUser = data.user || data.User || data.profile || null;
       if (!newToken) {
-        // Some APIs return the token as a plain string
         if (typeof data === 'string' && data.length > 20) {
-          persist(data, null);
+          persist(data, { roles: [] });
           return { ok: true };
         }
         throw new Error('Login succeeded but no token was returned.');
       }
+      // Build a "user" object from the response so the UI has all the fields
+      // it needs (id, email, fullName, roles).
+      const newUser = {
+        id: data.userId || data.UserId,
+        email: data.email || data.Email,
+        fullName: data.fullName || data.FullName,
+        roles: data.roles || data.Roles || [],
+        // Token info too
+        token: newToken,
+        expiresAt: data.expiresAt || data.ExpiresAt,
+      };
       persist(newToken, newUser);
       return { ok: true, user: newUser };
     } finally {
@@ -89,7 +99,18 @@ export function AuthProvider({ children }) {
   const value = {
     user,
     token,
-    role: user?.role || user?.Role || null,
+    // The backend returns `roles: ["Admin"]` (array) on login. Also tolerate
+    // a `role` field for older versions or alternative shapes.
+    role: (() => {
+      if (Array.isArray(user?.roles) && user.roles.length > 0) {
+        // Pick the highest-privilege role for UI purposes
+        const rank = { User: 0, BloodBankManager: 1, Admin: 2 };
+        return [...user.roles].sort((a, b) => (rank[b] ?? 0) - (rank[a] ?? 0))[0];
+      }
+      if (Array.isArray(user?.Roles) && user.Roles.length > 0) return user.Roles[0];
+      return user?.role || user?.Role || null;
+    })(),
+    roles: user?.roles || user?.Roles || [],
     isAuthenticated: !!token,
     bootstrapping,
     loading,

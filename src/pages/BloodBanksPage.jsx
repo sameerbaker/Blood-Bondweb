@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Container, Row, Col, Card, Form, Button, Table, Badge, Modal, Alert, Spinner } from 'react-bootstrap';
+import { Container, Row, Col, Card, Form, Button, Table, Badge, Modal, Alert, Spinner, ButtonGroup } from 'react-bootstrap';
 import toast from 'react-hot-toast';
 import PageHeader from '../components/PageHeader';
 import Loading from '../components/Loading';
 import EmptyState from '../components/EmptyState';
 import { bloodBanksApi } from '../api';
-import { apiErrorMessage } from '../utils/error';
+import { apiErrorMessage, isManagerOwnershipError } from '../utils/error';
 import { bloodTypeLabel } from '../context/constants';
+import { useAuth } from '../context/AuthContext';
 
 const emptyForm = {
   name: '',
@@ -17,6 +18,10 @@ const emptyForm = {
 };
 
 export default function BloodBanksPage() {
+  const { role } = useAuth();
+  const userRole = (role || '').toLowerCase();
+  const isAdmin = userRole === 'admin';
+
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -50,7 +55,43 @@ export default function BloodBanksPage() {
     return name.toLowerCase().includes(q) || city.toLowerCase().includes(q);
   });
 
+  // Count of pending banks (any of: status 0, "Pending", or unverified)
+  const pendingCount = items.filter((b) => {
+    const s = b.status ?? b.Status;
+    return s === 0 || s === '0' || s === 'Pending' || (!b.isVerified && s == null);
+  }).length;
+
+  const scrollToPending = () => {
+    const el = document.querySelector('tr.table-warning');
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
+
   const openCreate = () => { setEditing(null); setForm(emptyForm); setShowModal(true); };
+
+  // Approve / Reject (admin only)
+  const approve = async (b) => {
+    const id = b.id || b.Id;
+    if (!confirm(`Approve "${b.name || b.Name}"?`)) return;
+    try {
+      await bloodBanksApi.approve(id);
+      toast.success('Bank approved.');
+      await load();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Approve failed.'));
+    }
+  };
+
+  const reject = async (b) => {
+    const id = b.id || b.Id;
+    if (!confirm(`Reject "${b.name || b.Name}"?`)) return;
+    try {
+      await bloodBanksApi.reject(id);
+      toast.success('Bank rejected.');
+      await load();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Reject failed.'));
+    }
+  };
   const openEdit = (b) => {
     setEditing(b);
     setForm({
@@ -80,12 +121,26 @@ export default function BloodBanksPage() {
         toast.success('Blood bank updated.');
       } else {
         await bloodBanksApi.create(payload);
-        toast.success('Blood bank created.');
+        toast.success('Blood bank created — awaiting admin approval.');
       }
       setShowModal(false);
       await load();
     } catch (err) {
-      toast.error(apiErrorMessage(err, 'Save failed.'));
+      if (isManagerOwnershipError(err)) {
+        toast.error(
+          '⛔ You are not the manager of this blood bank. The backend restricts updates to the bank\'s own manager. ' +
+          'To fix this, redeploy the backend with the IsAdminOrManager override in BloodBankService.cs.',
+          { duration: 8000 }
+        );
+      } else if (err.response?.status === 500) {
+        toast.error(
+          'Server error (500). The backend doesn\'t have the admin override yet — redeploy BloodBankService.cs ' +
+          'with the IsAdminOrManager check, OR log in as this bank\'s manager.',
+          { duration: 8000 }
+        );
+      } else {
+        toast.error(apiErrorMessage(err, 'Save failed.'));
+      }
     } finally {
       setSaving(false);
     }
@@ -110,11 +165,33 @@ export default function BloodBanksPage() {
           />
         </Col>
         <Col md={6} className="text-md-end text-muted small">
-          {loading ? 'Loading…' : `${filtered.length} result(s)`}
+          {loading ? 'Loading…' : `${filtered.length} result(s) · ${pendingCount} pending approval`}
         </Col>
       </Row>
 
       {error && <Alert variant="warning">{error}</Alert>}
+
+      {isAdmin && pendingCount > 0 && (
+        <Alert variant="warning" className="d-flex justify-content-between align-items-center">
+          <span>
+            <strong>⏳ {pendingCount} blood bank{pendingCount > 1 ? 's' : ''} need{pendingCount === 1 ? 's' : ''} your approval.</strong>
+            {' '}Click the ✓ Approve button to activate them.
+          </span>
+          <Button size="sm" variant="warning" onClick={scrollToPending}>
+            Show pending
+          </Button>
+        </Alert>
+      )}
+
+      {isAdmin && (
+        <Alert variant="info" className="small">
+          <strong>👑 Admin tip:</strong> You can <strong>Approve / Reject</strong> any bank.
+          For <strong>editing details or updating inventory</strong>, the backend currently
+          requires you to be the bank's manager. If you see <code>500 — You are not the manager</code>,
+          log in as the bank's manager or update the backend's
+          <code>BloodBankService.IsAdminOrManager</code> check.
+        </Alert>
+      )}
 
       {loading ? (
         <Loading label="Loading blood banks…" />
@@ -136,21 +213,47 @@ export default function BloodBanksPage() {
               <tbody>
                 {filtered.map((b) => {
                   const id = b.id || b.Id;
+                  // Normalize status — backend may return enum int OR string
+                  const rawStatus = b.status ?? b.Status;
+                  let statusKey = 'Unknown';
+                  if (rawStatus === 0 || rawStatus === '0' || rawStatus === 'Pending') statusKey = 'Pending';
+                  else if (rawStatus === 1 || rawStatus === '1' || rawStatus === 'Verified' || b.isVerified) statusKey = 'Verified';
+                  else if (rawStatus === 2 || rawStatus === '2' || rawStatus === 'Rejected') statusKey = 'Rejected';
+                  else if (rawStatus === 3 || rawStatus === '3' || rawStatus === 'Suspended') statusKey = 'Suspended';
+                  const statusMeta = {
+                    Pending:   { variant: 'warning', label: 'Pending',  isPending: true  },
+                    Verified:  { variant: 'success', label: 'Verified', isPending: false },
+                    Rejected:  { variant: 'danger',  label: 'Rejected', isPending: false },
+                    Suspended: { variant: 'secondary', label: 'Suspended', isPending: false },
+                    Unknown:   { variant: 'secondary', label: String(rawStatus ?? '—'), isPending: false },
+                  }[statusKey];
                   return (
-                    <tr key={id}>
+                    <tr key={id} className={statusMeta.isPending ? 'table-warning' : ''}>
                       <td><strong>{b.name || b.Name}</strong></td>
                       <td>{b.cityAddress || b.CityAddress || '—'}</td>
                       <td>{b.contactPhone || b.ContactPhone || '—'}</td>
                       <td>
-                        {b.isVerified ? <Badge bg="success">Verified</Badge> : <Badge bg="secondary">Pending</Badge>}
+                        <Badge bg={statusMeta.variant}>{statusMeta.label}</Badge>
                       </td>
                       <td className="text-end">
-                        <Button size="sm" variant="outline-secondary" className="me-1" onClick={() => setShowInventory(b)}>
-                          Inventory
-                        </Button>
-                        <Button size="sm" variant="outline-danger" onClick={() => openEdit(b)}>
-                          Edit
-                        </Button>
+                        <ButtonGroup size="sm">
+                          {isAdmin && statusMeta.isPending && (
+                            <>
+                              <Button variant="success" onClick={() => approve(b)}>
+                                ✓ Approve
+                              </Button>
+                              <Button variant="outline-danger" onClick={() => reject(b)}>
+                                ✗ Reject
+                              </Button>
+                            </>
+                          )}
+                          <Button variant="outline-secondary" onClick={() => setShowInventory(b)}>
+                            Inventory
+                          </Button>
+                          <Button variant="outline-danger" onClick={() => openEdit(b)}>
+                            Edit
+                          </Button>
+                        </ButtonGroup>
                       </td>
                     </tr>
                   );
@@ -234,7 +337,13 @@ function InventoryModal({ bank, onClose }) {
       toast.success('Inventory updated.');
       onClose();
     } catch (err) {
-      toast.error(apiErrorMessage(err, 'Failed to update inventory.'));
+      if (isManagerOwnershipError(err)) {
+        toast.error(
+          'You are not the manager of this blood bank. The backend restricts inventory updates to the bank\'s own manager. Log in as the bank\'s manager to update inventory.'
+        );
+      } else {
+        toast.error(apiErrorMessage(err, 'Failed to update inventory.'));
+      }
     } finally {
       setSaving(false);
     }

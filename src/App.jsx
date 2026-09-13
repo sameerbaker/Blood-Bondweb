@@ -20,6 +20,8 @@ import MonetaryDonationsPage from './pages/MonetaryDonationsPage';
 import RatingsPage from './pages/RatingsPage';
 import EventsPage from './pages/EventsPage';
 import ContactUsPage from './pages/ContactUsPage';
+import AdminDiagnosticPage from './pages/AdminDiagnosticPage';
+import AdminMonetaryPage from './pages/AdminMonetaryPage';
 import NotFoundPage from './pages/NotFoundPage';
 import ForbiddenPage from './pages/ForbiddenPage';
 
@@ -98,6 +100,22 @@ export default function App() {
             element={
               <ProtectedRoute roles={['Admin']}>
                 <AdminUsersPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/diagnostic"
+            element={
+              <ProtectedRoute>
+                <AdminDiagnosticPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/monetary"
+            element={
+              <ProtectedRoute roles={['Admin']}>
+                <AdminMonetaryPage />
               </ProtectedRoute>
             }
           />

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Container, Row, Col, Card, Form, Button, Table, Badge, Alert, Spinner,
-  ProgressBar, InputGroup,
+  ProgressBar, InputGroup, ButtonGroup, Modal,
 } from 'react-bootstrap';
 import toast from 'react-hot-toast';
 import PageHeader from '../components/PageHeader';
@@ -9,18 +9,32 @@ import Loading from '../components/Loading';
 import EmptyState from '../components/EmptyState';
 import { monetaryApi, bloodBanksApi } from '../api';
 import { apiErrorMessage } from '../utils/error';
+import { useAuth } from '../context/AuthContext';
 import {
   CURRENCIES, DONATION_PRESETS, currencyMeta, formatMoney, formatDate,
 } from '../context/constants';
 
+// Status mapping (matches the backend: "Pending" | "Succeeded" | "Failed")
+const STATUS_META = {
+  Pending:   { variant: 'warning',   label: 'Pending — awaiting Stripe' },
+  Succeeded: { variant: 'success',   label: 'Succeeded ✓' },
+  Failed:    { variant: 'danger',    label: 'Failed ✗' },
+  Refunded:  { variant: 'secondary', label: 'Refunded' },
+  Canceled:  { variant: 'secondary', label: 'Cancelled' },
+};
+
 export default function MonetaryDonationsPage() {
+  const { role } = useAuth();
+  const isAdmin = (role || '').toLowerCase() === 'admin';
   const [history, setHistory] = useState([]);
   const [total, setTotal] = useState(null);
   const [banks, setBanks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
-  // Create form state
+  // Create form
   const [form, setForm] = useState({
     bloodBankId: '',
     amount: 25,
@@ -28,9 +42,12 @@ export default function MonetaryDonationsPage() {
   });
   const [creating, setCreating] = useState(false);
 
-  const load = async () => {
-    setLoading(true);
-    setError('');
+  // Mock-mode payment modal (when backend returns isMock=true)
+  const [mockDonation, setMockDonation] = useState(null);
+  const [mockSubmitting, setMockSubmitting] = useState(false);
+
+  const load = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const [h, t, b] = await Promise.allSettled([
         monetaryApi.mine(),
@@ -41,13 +58,58 @@ export default function MonetaryDonationsPage() {
       if (t.status === 'fulfilled') setTotal(t.value.data);
       if (b.status === 'fulfilled') setBanks(Array.isArray(b.value.data) ? b.value.data : []);
       const firstErr = [h, t, b].find((r) => r.status === 'rejected');
-      if (firstErr) setError(apiErrorMessage(firstErr.reason, 'Some data failed to load.'));
+      if (firstErr && !silent) setError(apiErrorMessage(firstErr.reason, 'Some data failed to load.'));
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
   useEffect(() => { load(); }, []);
+
+  // Auto-refresh every 5s if there are pending donations (Stripe webhook might
+  // take a moment to update the status).
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const hasPending = history.some((d) => (d.status || d.Status) === 'Pending');
+    if (!hasPending) return;
+    const id = setInterval(() => { load(true); }, 5000);
+    return () => clearInterval(id);
+  }, [autoRefresh, history]);
+
+  // Manual fallback when the Stripe webhook is not reaching the backend
+  // (common in dev / when the webhook URL is misconfigured in Stripe Dashboard).
+  const markAsPaid = async (d) => {
+    const intentId = d.stripePaymentIntentId || d.StripePaymentIntentId;
+    if (!intentId) {
+      toast.error('This donation has no Stripe payment intent ID.');
+      return;
+    }
+    setRefreshing(true);
+    try {
+      await monetaryApi.confirm(intentId, 'Succeeded');
+      toast.success('Marked as Succeeded.');
+      await load();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Mark-as-paid failed.'));
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const markAsFailed = async (d) => {
+    const intentId = d.stripePaymentIntentId || d.StripePaymentIntentId;
+    if (!intentId) return;
+    setRefreshing(true);
+    try {
+      await monetaryApi.confirm(intentId, 'Failed');
+      toast.success('Marked as Failed.');
+      await load();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Mark-as-failed failed.'));
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   const presets = useMemo(
     () => DONATION_PRESETS[form.currency] || DONATION_PRESETS.usd,
@@ -64,21 +126,43 @@ export default function MonetaryDonationsPage() {
     }
     setCreating(true);
     try {
+      // Backend expects: { amount: decimal, currency: string, bloodBankId: int? }
       const payload = { amount: Number(form.amount), currency: form.currency };
       if (form.bloodBankId) payload.bloodBankId = Number(form.bloodBankId);
       const res = await monetaryApi.createIntent(payload);
-      // Backend can return either a Stripe URL (string) or { url, sessionId }
       const data = res.data || {};
-      const url = typeof data === 'string' ? data : (data.url || data.checkoutUrl || data.sessionUrl);
-      if (url) {
-        toast.success('Redirecting to secure checkout…');
-        // Open in a new tab so the user keeps their session in the SPA
+
+      // Diagnostic — log the full response so we can see what the backend
+      // is actually returning. Visible in DevTools → Console.
+      console.log('[Donation] createIntent response:', data);
+
+      const url = typeof data === 'string'
+        ? data
+        : (data.checkoutUrl || data.url || data.sessionUrl);
+      const clientSecret = data.clientSecret;
+      const intentId = data.paymentIntentId;
+      const isMock = data.isMock === true;
+
+      console.log('[Donation] Parsed:', { url, clientSecret, intentId, isMock });
+
+      // Priority 1: real Stripe Checkout URL → open in new tab
+      if (url && !isMock) {
         window.open(url, '_blank', 'noopener,noreferrer');
+        toast.success('Opening Stripe secure checkout in a new tab — complete payment there.');
+      }
+      // Priority 2: backend is in mock mode (no real Stripe key) → show the
+      // local test card modal so the user can still complete a test payment.
+      else if (isMock || clientSecret || intentId) {
+        setMockDonation({
+          paymentIntentId: intentId,
+          clientSecret,
+          amount: payload.amount,
+          currency: payload.currency,
+        });
+        toast('Complete the test payment to confirm your donation.', { icon: 'ℹ️' });
       } else {
         toast.success('Donation intent created.');
       }
-      // Refresh history + total (webhook may take a few seconds)
-      setTimeout(load, 1500);
     } catch (err) {
       toast.error(apiErrorMessage(err, 'Donation failed.'));
     } finally {
@@ -86,26 +170,42 @@ export default function MonetaryDonationsPage() {
     }
   };
 
-  // Compute total this user has given (fallback if /total endpoint returns
-  // a different shape than expected).
+  // Mock-mode card payment. Backend is in "mock" mode because no real
+  // Stripe key is configured. We present a test card form and then call
+  // the confirm endpoint to simulate a successful payment.
+  const submitMockPayment = async (outcome) => {
+    if (!mockDonation) return;
+    setMockSubmitting(true);
+    try {
+      await monetaryApi.confirm(mockDonation.paymentIntentId, outcome);
+      toast.success(
+        outcome === 'Succeeded'
+          ? '✅ Test payment succeeded!'
+          : '❌ Test payment marked as failed.'
+      );
+      setMockDonation(null);
+      load();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Mock payment failed.'));
+    } finally {
+      setMockSubmitting(false);
+    }
+  };
+
+  // Computed totals (defensive — backend shape may vary)
   const computedTotal = useMemo(() => {
     if (total && typeof total === 'object' && 'total' in total) return Number(total.total);
     if (typeof total === 'number') return total;
-    return history.reduce((acc, d) => {
-      const amount = Number(d.amount ?? d.Amount ?? 0);
-      const status = (d.status || d.Status || '').toLowerCase();
-      if (status === 'succeeded' || status === 'paid' || status === 'completed') {
-        return acc + amount;
-      }
-      return acc;
-    }, 0);
+    return history
+      .filter((d) => (d.status || d.Status) === 'Succeeded')
+      .reduce((acc, d) => acc + Number(d.amount ?? d.Amount ?? 0), 0);
   }, [history, total]);
 
-  // Currency for display — first item's currency or USD
-  const displayCurrency = useMemo(() => {
-    if (history[0]?.currency || history[0]?.Currency) return history[0].currency || history[0].Currency;
-    return 'usd';
-  }, [history]);
+  const succeededCount = history.filter((d) => (d.status || d.Status) === 'Succeeded').length;
+  const pendingCount   = history.filter((d) => (d.status || d.Status) === 'Pending').length;
+  const successRate    = history.length === 0 ? 0 : Math.round((succeededCount / history.length) * 100);
+
+  const displayCurrency = history[0]?.currency || history[0]?.Currency || 'usd';
 
   return (
     <Container>
@@ -116,6 +216,37 @@ export default function MonetaryDonationsPage() {
 
       {error && <Alert variant="warning">{error}</Alert>}
 
+      <Alert variant="info" className="small">
+        💡 <strong>How it works:</strong> when you click "Donate", the backend creates a Stripe payment intent.
+        After you complete the payment, Stripe notifies the backend (webhook) and the donation status changes
+        from <Badge bg="warning">Pending</Badge> to <Badge bg="success">Succeeded</Badge> automatically. No manual
+        approval is needed.
+      </Alert>
+
+      {pendingCount > 0 && (
+        <Alert variant="warning" className="d-flex justify-content-between align-items-center">
+          <span>
+            <strong>⏳ {pendingCount} donation{pendingCount > 1 ? 's' : ''} still Pending.</strong>
+            {' '}Stripe is confirming your payment. This page auto-refreshes every 5 seconds.
+          </span>
+          <ButtonGroup size="sm">
+            <Button
+              variant="outline-warning"
+              onClick={() => load()}
+              disabled={refreshing}
+            >
+              {refreshing ? <Spinner size="sm" animation="border" /> : '🔄 Refresh now'}
+            </Button>
+            <Button
+              variant="outline-secondary"
+              onClick={() => setAutoRefresh((v) => !v)}
+            >
+              {autoRefresh ? 'Pause auto-refresh' : 'Resume auto-refresh'}
+            </Button>
+          </ButtonGroup>
+        </Alert>
+      )}
+
       <Row className="g-3 mb-3">
         <Col md={4}>
           <Card className="shadow-sm border-0 h-100">
@@ -124,41 +255,29 @@ export default function MonetaryDonationsPage() {
               <div className="display-6 fw-bold text-danger">
                 {formatMoney(computedTotal, displayCurrency)}
               </div>
-              <div className="text-muted small mt-1">All-time across all banks</div>
+              <div className="text-muted small mt-1">All-time, succeeded only</div>
             </Card.Body>
           </Card>
         </Col>
         <Col md={4}>
           <Card className="shadow-sm border-0 h-100">
             <Card.Body>
-              <div className="text-muted small">Donations made</div>
+              <div className="text-muted small">Donations</div>
               <div className="display-6 fw-bold">{history.length}</div>
-              <div className="text-muted small mt-1">Including pending and succeeded</div>
+              <div className="text-muted small mt-1">
+                {succeededCount} succeeded · {pendingCount} pending
+              </div>
             </Card.Body>
           </Card>
         </Col>
         <Col md={4}>
           <Card className="shadow-sm border-0 h-100">
             <Card.Body>
-              <div className="text-muted small">Succeeded</div>
-              <div className="display-6 fw-bold text-success">
-                {history.filter((d) => {
-                  const s = (d.status || d.Status || '').toLowerCase();
-                  return s === 'succeeded' || s === 'paid' || s === 'completed';
-                }).length}
-              </div>
+              <div className="text-muted small">Success rate</div>
+              <div className="display-6 fw-bold text-success">{successRate}%</div>
               <ProgressBar
                 variant="success"
-                now={
-                  history.length === 0
-                    ? 0
-                    : Math.round(
-                        (history.filter((d) => {
-                          const s = (d.status || d.Status || '').toLowerCase();
-                          return s === 'succeeded' || s === 'paid' || s === 'completed';
-                        }).length / history.length) * 100
-                      )
-                }
+                now={successRate}
                 className="mt-2"
                 style={{ height: 6 }}
               />
@@ -234,9 +353,6 @@ export default function MonetaryDonationsPage() {
                       : <>Donate {formatMoney(form.amount, form.currency)}</>}
                   </Button>
                 </div>
-                <div className="text-muted small text-center mt-2">
-                  You'll be redirected to Stripe's secure checkout.
-                </div>
               </Form>
             </Card.Body>
           </Card>
@@ -267,36 +383,59 @@ export default function MonetaryDonationsPage() {
                       <th>Bank</th>
                       <th>Amount</th>
                       <th>Status</th>
+                      <th className="text-end">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {history.map((d) => {
-                      const id = d.id || d.Id || d.sessionId || d.SessionId;
-                      const bank = d.bloodBankName || d.BloodBankName || '—';
+                      const id = d.id || d.Id || d.stripePaymentIntentId;
+                      const bank = d.bloodBankName || d.BloodBankName || 'General fund';
                       const amount = Number(d.amount ?? d.Amount ?? 0);
-                      const currency = d.currency || d.Currency || 'usd';
+                      const currency = (d.currency || d.Currency || 'usd').toLowerCase();
                       const status = d.status || d.Status || 'Pending';
+                      const meta = STATUS_META[status] || { variant: 'secondary', label: status };
                       return (
                         <tr key={id}>
-                          <td className="small">{formatDate(d.createdAt || d.CreatedAt || d.date || d.Date)}</td>
-                          <td>{bank}</td>
+                          <td className="small">{formatDate(d.donationDate || d.DonationDate || d.createdAt)}</td>
+                          <td className="small">{bank}</td>
                           <td className="fw-bold text-danger">
                             {formatMoney(amount, currency)}
                           </td>
                           <td>
-                            <Badge
-                              bg={
-                                ['succeeded', 'paid', 'completed'].includes(status.toLowerCase())
-                                  ? 'success'
-                                  : status.toLowerCase() === 'pending'
-                                  ? 'warning'
-                                  : status.toLowerCase() === 'failed'
-                                  ? 'danger'
-                                  : 'secondary'
-                              }
-                            >
-                              {status}
-                            </Badge>
+                            <Badge bg={meta.variant}>{meta.label}</Badge>
+                          </td>
+                          <td className="text-end">
+                            {status === 'Pending' && (
+                              <ButtonGroup size="sm">
+                                {isAdmin ? (
+                                  <>
+                                    <Button
+                                      variant="success"
+                                      onClick={() => markAsPaid(d)}
+                                      disabled={refreshing}
+                                    >
+                                      ✓ Mark paid
+                                    </Button>
+                                    <Button
+                                      variant="outline-danger"
+                                      onClick={() => markAsFailed(d)}
+                                      disabled={refreshing}
+                                    >
+                                      ✗ Mark failed
+                                    </Button>
+                                  </>
+                                ) : (
+                                  <Button
+                                    variant="outline-primary"
+                                    onClick={() => load()}
+                                    disabled={refreshing}
+                                    title="Click to refresh the status — Stripe may take a few seconds to confirm."
+                                  >
+                                    🔄 Check status
+                                  </Button>
+                                )}
+                              </ButtonGroup>
+                            )}
                           </td>
                         </tr>
                       );
@@ -308,6 +447,87 @@ export default function MonetaryDonationsPage() {
           </Card>
         </Col>
       </Row>
+
+      {/* Mock payment modal — only shown when backend is in mock mode
+          (i.e. no real Stripe key is configured). Lets the user complete
+          a test payment and see the Succeeded status flow end-to-end. */}
+      <MockPaymentModal
+        donation={mockDonation}
+        onClose={() => setMockDonation(null)}
+        onSubmit={submitMockPayment}
+        submitting={mockSubmitting}
+      />
     </Container>
+  );
+}
+
+function MockPaymentModal({ donation, onClose, onSubmit, submitting }) {
+  const [card, setCard] = useState('4242 4242 4242 4242');
+  const [exp,  setExp]  = useState('12/30');
+  const [cvc,  setCvc]  = useState('123');
+
+  if (!donation) return null;
+
+  return (
+    <Modal show onHide={onClose} centered backdrop="static">
+      <Modal.Header closeButton>
+        <Modal.Title>🧪 Test payment (mock mode)</Modal.Title>
+      </Modal.Header>
+      <Modal.Body>
+        <Alert variant="warning" className="small">
+          The backend returned a <strong>mock</strong> payment intent because
+          the real Stripe API key isn't configured. No real card data is
+          sent — use any 16-digit test number.
+        </Alert>
+
+        <div className="text-center mb-3">
+          <div className="text-muted small">Donation</div>
+          <div className="display-6 fw-bold text-danger">
+            {formatMoney(donation.amount, donation.currency)}
+          </div>
+          <div className="text-muted small">
+            Payment Intent: <code>{donation.paymentIntentId}</code>
+          </div>
+        </div>
+
+        <Form.Group className="mb-3">
+          <Form.Label>Card number</Form.Label>
+          <Form.Control value={card} onChange={(e) => setCard(e.target.value)} />
+        </Form.Group>
+        <Row>
+          <Col xs={6}>
+            <Form.Group className="mb-3">
+              <Form.Label>Expiry</Form.Label>
+              <Form.Control value={exp} onChange={(e) => setExp(e.target.value)} />
+            </Form.Group>
+          </Col>
+          <Col xs={6}>
+            <Form.Group className="mb-3">
+              <Form.Label>CVC</Form.Label>
+              <Form.Control value={cvc} onChange={(e) => setCvc(e.target.value)} />
+            </Form.Group>
+          </Col>
+        </Row>
+      </Modal.Body>
+      <Modal.Footer>
+        <Button variant="outline-secondary" onClick={onClose} disabled={submitting}>
+          Cancel
+        </Button>
+        <Button
+          variant="outline-danger"
+          onClick={() => onSubmit('Failed')}
+          disabled={submitting}
+        >
+          {submitting ? <Spinner size="sm" animation="border" /> : '✗ Simulate failure'}
+        </Button>
+        <Button
+          variant="success"
+          onClick={() => onSubmit('Succeeded')}
+          disabled={submitting}
+        >
+          {submitting ? <Spinner size="sm" animation="border" /> : `✓ Pay ${formatMoney(donation.amount, donation.currency)}`}
+        </Button>
+      </Modal.Footer>
+    </Modal>
   );
 }
