@@ -6,7 +6,7 @@ import toast from 'react-hot-toast';
 import PageHeader from '../components/PageHeader';
 import Loading from '../components/Loading';
 import EmptyState from '../components/EmptyState';
-import { bloodRequestsApi } from '../api';
+import { bloodRequestsApi, bloodBanksApi } from '../api';
 import { apiErrorMessage } from '../utils/error';
 import {
   BLOOD_TYPES, URGENCY_LEVELS, bloodTypeLabel, urgencyMeta, requestStatusMeta, formatDate,
@@ -21,7 +21,9 @@ export default function BloodRequestsPage() {
   const canManage = userRole === 'admin' || userRole === 'bloodbankmanager';
 
   // 'mine' = my requests, 'active' = open by city filter
-  const [tab, setTab] = useState('mine');
+  // Managers default to the Active-in-city tab so they see incoming
+  // requests the moment they open the page; donors default to their own.
+  const [tab, setTab] = useState(canManage ? 'active' : 'mine');
   const [city, setCity] = useState('');
 
   const [items, setItems] = useState([]);
@@ -35,9 +37,28 @@ export default function BloodRequestsPage() {
     setLoading(true);
     setError('');
     try {
-      const res = tab === 'active'
-        ? city ? await bloodRequestsApi.activeByCity(city) : { data: [] }
-        : await bloodRequestsApi.mine();
+      let res;
+      if (tab === 'active') {
+        // Manager view: requests in their bank's city.
+        if (canManage) {
+          try {
+            const mineBank = await bloodBanksApi.mine();
+            const bankId = mineBank.data?.id ?? mineBank.data?.Id;
+            if (bankId) {
+              res = await bloodRequestsApi.byBank(bankId);
+            } else {
+              res = { data: [] };
+            }
+          } catch {
+            // No bank / fallback to public city feed
+            res = city ? await bloodRequestsApi.activeByCity(city) : { data: [] };
+          }
+        } else {
+          res = city ? await bloodRequestsApi.activeByCity(city) : { data: [] };
+        }
+      } else {
+        res = await bloodRequestsApi.mine();
+      }
       setItems(Array.isArray(res.data) ? res.data : []);
     } catch (err) {
       setError(apiErrorMessage(err, 'Failed to load requests.'));
@@ -46,7 +67,7 @@ export default function BloodRequestsPage() {
     }
   };
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [tab]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [tab, canManage]);
 
   const onCreate = async (e) => {
     e.preventDefault();
@@ -84,8 +105,14 @@ export default function BloodRequestsPage() {
   const fulfill = async (id) => {
     if (!confirm('Mark this request as fulfilled? This action should only be taken when the blood has been provided.')) return;
     try {
-      await bloodRequestsApi.fulfill(id);
-      toast.success('Request fulfilled.');
+      const res = await bloodRequestsApi.fulfill(id);
+      // The backend returns the updated entity. Show what came back so
+      // the user can see the new status immediately, even before reload.
+      const newStatus = res?.data?.status ?? res?.data?.Status;
+      const newName = typeof newStatus === 'number'
+        ? (newStatus === 2 ? 'Fulfilled' : newStatus === 3 ? 'Cancelled' : 'Updated')
+        : newStatus;
+      toast.success(`Request fulfilled (status: ${newName}).`);
       await load();
     } catch (err) {
       toast.error(apiErrorMessage(err, 'Fulfill failed.'));
@@ -103,9 +130,21 @@ export default function BloodRequestsPage() {
   };
 
   // Group + sort: pending first, then by urgency
+  // Normalize the backend's RequestStatus (enum int 0..4) to the enum name.
+  const rawName = (r) => {
+    const raw = r?.status ?? r?.Status ?? 0;
+    if (raw === 0 || raw === '0' || raw === 'Pending')     return 'Pending';
+    if (raw === 1 || raw === '1' || raw === 'InProgress')  return 'InProgress';
+    if (raw === 2 || raw === '2' || raw === 'Fulfilled')   return 'Fulfilled';
+    if (raw === 3 || raw === '3' || raw === 'Cancelled')   return 'Cancelled';
+    if (raw === 4 || raw === '4' || raw === 'Expired')     return 'Expired';
+    if (raw === 'Active') return 'Pending'; // legacy alias
+    return 'Unknown';
+  };
+
   const sorted = [...items].sort((a, b) => {
-    const aP = String(a.status ?? a.Status ?? '').toLowerCase() === 'pending' ? 0 : 1;
-    const bP = String(b.status ?? b.Status ?? '').toLowerCase() === 'pending' ? 0 : 1;
+    const aP = rawName(a) === 'Pending' ? 0 : 1;
+    const bP = rawName(b) === 'Pending' ? 0 : 1;
     if (aP !== bP) return aP - bP;
     return (b.urgencyLevel ?? b.UrgencyLevel ?? 0) - (a.urgencyLevel ?? a.UrgencyLevel ?? 0);
   });
@@ -120,6 +159,12 @@ export default function BloodRequestsPage() {
 
       <Card className="shadow-sm border-0 mb-3">
         <Card.Body className="p-2">
+          {canManage && tab === 'active' && (
+            <div className="text-muted small mb-2">
+              <Badge bg="info" className="me-1">Manager view</Badge>
+              Showing active blood requests for <strong>your bank</strong>'s city.
+            </div>
+          )}
           <Nav variant="pills" activeKey={tab} onSelect={(k) => k && setTab(k)}>
             <Nav.Item>
               <Nav.Link eventKey="mine">📋 My requests</Nav.Link>
@@ -130,6 +175,14 @@ export default function BloodRequestsPage() {
           </Nav>
         </Card.Body>
       </Card>
+
+      {tab === 'active' && canManage && sorted.length > 0 && (
+        <Alert variant="info" className="small mb-3">
+          <strong>How to approve a request:</strong> click <Badge bg="success">✓ Fulfill</Badge> when
+          you can provide the blood, or <Badge bg="outline-danger">Cancel</Badge> if you cannot.
+          Approved requests move patients off the wait list.
+        </Alert>
+      )}
 
       {tab === 'active' && (
         <Row className="g-2 mb-3">
@@ -154,10 +207,20 @@ export default function BloodRequestsPage() {
         <Loading />
       ) : sorted.length === 0 ? (
         <EmptyState
-          title={tab === 'active' ? 'No active requests' : 'No requests yet'}
-          message={tab === 'active'
-            ? (city ? `No pending requests in ${city}.` : 'Enter a city to find active requests.')
-            : 'Click + New request to create one.'}
+          title={
+            tab === 'active'
+              ? (canManage ? 'No active requests for your bank' : 'No active requests')
+              : 'No requests yet'
+          }
+          message={
+            tab === 'active'
+              ? (canManage
+                  ? 'There are no pending blood requests in your bank\'s city right now.'
+                  : (city
+                      ? `No pending requests in ${city}.`
+                      : 'Enter a city to find active requests.'))
+              : 'Click + New request to create one.'
+          }
           icon="🩸"
         />
       ) : (
@@ -194,12 +257,12 @@ export default function BloodRequestsPage() {
                             Notify
                           </Button>
                         )}
-                        {canManage && s.label !== 'Fulfilled' && s.label !== 'Cancelled' && (
+                        {canManage && s.label !== 'Fulfilled ✓' && s.label !== 'Cancelled' && (
                           <Button size="sm" variant="success" className="me-1" onClick={() => fulfill(id)}>
                             ✓ Fulfill
                           </Button>
                         )}
-                        {s.label !== 'Cancelled' && s.label !== 'Fulfilled' && (
+                        {s.label !== 'Cancelled' && s.label !== 'Fulfilled ✓' && (
                           <Button size="sm" variant="outline-danger" onClick={() => cancel(id)}>
                             Cancel
                           </Button>

@@ -155,7 +155,7 @@ export default function AdminDiagnosticPage() {
             </Button>
           )
         }
-      />*/
+      />
 
       {!isAdmin && (
         <Alert variant="warning">
@@ -275,10 +275,11 @@ dotnet publish -c Release -o ./publish`}</code></pre>
           </Card>
         </Tab>
       </Tabs>
-
+    
       <CodeModal feature={showCode} onClose={() => setShowCode(null)} />
     </Container>
   );
+  
 }
 
 function uiHintForFeature(f) {

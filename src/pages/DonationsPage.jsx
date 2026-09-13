@@ -8,6 +8,20 @@ import Loading from '../components/Loading';
 import EmptyState from '../components/EmptyState';
 import { donationsApi, bloodBanksApi } from '../api';
 import { apiErrorMessage } from '../utils/error';
+
+// Normalize the backend's DonationStatus (serialized as integer 0..4
+// by default) to the enum name. Also tolerates the string form.
+function rawStatusName(raw) {
+  if (raw === 0 || raw === '0' || raw === 'Scheduled') return 'Scheduled';
+  if (raw === 1 || raw === '1' || raw === 'Approved')  return 'Approved';
+  if (raw === 2 || raw === '2' || raw === 'Rejected')  return 'Rejected';
+  if (raw === 3 || raw === '3' || raw === 'Completed') return 'Completed';
+  if (raw === 4 || raw === '4' || raw === 'Cancelled') return 'Cancelled';
+  // Legacy aliases
+  if (raw === 'Pending') return 'Scheduled';
+  if (raw === 'Failed')  return 'Rejected';
+  return 'Unknown';
+}
 import { donationStatusMeta, formatDate, bloodTypeLabel } from '../context/constants';
 import { useAuth } from '../context/AuthContext';
 
@@ -39,7 +53,38 @@ export default function DonationsPage() {
     setLoading(true);
     setError('');
     try {
-      const res = await donationsApi.mine();
+      let res;
+      if (canManage) {
+        // Manager / Admin: load donations for the bank they manage.
+        // Try /mine first (own donations); also try /by-bank for the
+        // manager's bank so they see incoming requests from donors.
+        const myRes = await donationsApi.mine().catch(() => ({ data: [] }));
+        const myList = Array.isArray(myRes.data) ? myRes.data : [];
+
+        let bankList = [];
+        try {
+          // Get the bank the manager owns
+          const mineBank = await bloodBanksApi.mine();
+          const bankId = mineBank.data?.id ?? mineBank.data?.Id;
+          if (bankId) {
+            const bankRes = await donationsApi.byBank(bankId);
+            bankList = Array.isArray(bankRes.data) ? bankRes.data : [];
+          }
+        } catch { /* not a manager / no bank yet */ }
+
+        // Merge + dedupe by id
+        const all = [...bankList, ...myList];
+        const seen = new Set();
+        res = { data: all.filter((d) => {
+          const id = d.id ?? d.Id;
+          if (seen.has(id)) return false;
+          seen.add(id);
+          return true;
+        }) };
+      } else {
+        // Regular user: only their own donations
+        res = await donationsApi.mine();
+      }
       setItems(Array.isArray(res.data) ? res.data : []);
     } catch (err) {
       setError(apiErrorMessage(err, 'Failed to load donations.'));
@@ -113,17 +158,20 @@ export default function DonationsPage() {
 
   // Tab filtering + sorting
   const filtered = items.filter((d) => {
-    const status = String(d.status ?? d.Status ?? 'Pending');
-    if (tab === 'pending')   return status === 'Pending';
-    if (tab === 'completed') return status === 'Completed' || status === 'Approved';
+    // Backend serializes the DonationStatus enum as an integer (0..4) by
+    // default. Normalize to the enum name so the tabs work.
+    const raw = d.status ?? d.Status ?? 0;
+    const name = rawStatusName(raw);
+    if (tab === 'pending')   return name === 'Scheduled';
+    if (tab === 'completed') return name === 'Completed' || name === 'Approved';
     return true; // 'mine' = show all
   });
 
   // Counts for the tabs
   const counts = {
     all:       items.length,
-    pending:   items.filter((d) => String(d.status ?? d.Status) === 'Pending').length,
-    completed: items.filter((d) => ['Completed', 'Approved'].includes(String(d.status ?? d.Status))).length,
+    pending:   items.filter((d) => rawStatusName(d.status ?? d.Status) === 'Scheduled').length,
+    completed: items.filter((d) => ['Completed', 'Approved'].includes(rawStatusName(d.status ?? d.Status))).length,
   };
 
   return (
@@ -140,6 +188,12 @@ export default function DonationsPage() {
 
       <Card className="shadow-sm border-0 mb-3">
         <Card.Body className="p-2">
+          {canManage && (
+            <div className="text-muted small mb-2">
+              <Badge bg="info" className="me-1">Manager view</Badge>
+              Showing donations scheduled for <strong>your bank</strong>, plus any you personally scheduled.
+            </div>
+          )}
           <Nav variant="pills" activeKey={tab} onSelect={(k) => k && setTab(k)}>
             <Nav.Item><Nav.Link eventKey="mine">🩸 All ({counts.all})</Nav.Link></Nav.Item>
             {canManage && (
@@ -200,7 +254,7 @@ export default function DonationsPage() {
                         {(d.notes || d.Notes || '').slice(0, 60)}{(d.notes || d.Notes || '').length > 60 ? '…' : ''}
                       </td>
                       <td className="text-end">
-                        {canManage && s.label === 'Pending' && (
+                        {canManage && s.label === 'Scheduled (awaiting approval)' && (
                           <>
                             <Button size="sm" variant="success" className="me-1" onClick={() => approve(d)}>
                               ✓ Approve

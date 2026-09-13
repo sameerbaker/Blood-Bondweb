@@ -48,7 +48,7 @@ export default function AppLayout() {
           </Row>
           <hr className="my-3" />
           <div className="text-center text-muted small">
-            © {new Date().getFullYear()} Blood Bond &middot; Built with React + Bootstrap
+            © {new Date().getFullYear()} Blood Bond &middot; 
           </div>
         </Container>
       </footer>

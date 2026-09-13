@@ -45,22 +45,24 @@ export const DONATION_PRESETS = {
   ils: [20, 50, 100, 200, 500],
 };
 
-// Donation status badges (matches .NET backend strings).
+// Donation status badges (matches .NET `DonationStatus` enum).
+//   0 = Scheduled, 1 = Approved, 2 = Rejected, 3 = Completed, 4 = Cancelled
 export const DONATION_STATUSES = {
-  Pending:   { variant: 'warning', label: 'Pending' },
-  Approved:  { variant: 'info',    label: 'Approved' },
-  Completed: { variant: 'success', label: 'Completed' },
-  Cancelled: { variant: 'secondary', label: 'Cancelled' },
-  Rejected:  { variant: 'danger',  label: 'Rejected' },
+  Scheduled:  { variant: 'warning',   label: 'Scheduled (awaiting approval)' },
+  Approved:   { variant: 'info',      label: 'Approved' },
+  Rejected:   { variant: 'danger',    label: 'Rejected' },
+  Completed:  { variant: 'success',   label: 'Completed ✓' },
+  Cancelled:  { variant: 'secondary', label: 'Cancelled' },
 };
 
-// Request statuses.
+// Request statuses (matches .NET `RequestStatus` enum).
+//   0 = Pending, 1 = InProgress, 2 = Fulfilled, 3 = Cancelled, 4 = Expired
 export const REQUEST_STATUSES = {
-  Active:   { variant: 'success', label: 'Active' },
-  Pending:  { variant: 'warning', label: 'Pending' },
-  Fulfilled:{ variant: 'info',    label: 'Fulfilled' },
-  Cancelled:{ variant: 'secondary', label: 'Cancelled' },
-  Expired:  { variant: 'danger',  label: 'Expired' },
+  Pending:    { variant: 'warning',   label: 'Pending' },
+  InProgress: { variant: 'info',      label: 'In progress' },
+  Fulfilled:  { variant: 'success',   label: 'Fulfilled ✓' },
+  Cancelled:  { variant: 'secondary', label: 'Cancelled' },
+  Expired:    { variant: 'danger',    label: 'Expired' },
 };
 
 // --- Lookup helpers --------------------------------------------------------
@@ -85,11 +87,28 @@ export function currencyMeta(code) {
 }
 
 export function donationStatusMeta(status) {
-  return DONATION_STATUSES[status] || { variant: 'secondary', label: status || 'Unknown' };
+  // Accept the enum integer (0..4), its name, or a legacy string.
+  if (status === 0 || status === '0' || status === 'Scheduled') return DONATION_STATUSES.Scheduled;
+  if (status === 1 || status === '1' || status === 'Approved')  return DONATION_STATUSES.Approved;
+  if (status === 2 || status === '2' || status === 'Rejected')  return DONATION_STATUSES.Rejected;
+  if (status === 3 || status === '3' || status === 'Completed') return DONATION_STATUSES.Completed;
+  if (status === 4 || status === '4' || status === 'Cancelled') return DONATION_STATUSES.Cancelled;
+  // Legacy aliases kept by older code paths.
+  if (status === 'Pending') return DONATION_STATUSES.Scheduled;
+  if (status === 'Failed')  return DONATION_STATUSES.Rejected;
+  return { variant: 'secondary', label: status === null || status === undefined ? 'Unknown' : String(status) };
 }
 
 export function requestStatusMeta(status) {
-  return REQUEST_STATUSES[status] || { variant: 'secondary', label: status || 'Unknown' };
+  // Accept the enum integer (0..4), its name, or a legacy string.
+  if (status === 0 || status === '0' || status === 'Pending')     return REQUEST_STATUSES.Pending;
+  if (status === 1 || status === '1' || status === 'InProgress')  return REQUEST_STATUSES.InProgress;
+  if (status === 2 || status === '2' || status === 'Fulfilled')   return REQUEST_STATUSES.Fulfilled;
+  if (status === 3 || status === '3' || status === 'Cancelled')   return REQUEST_STATUSES.Cancelled;
+  if (status === 4 || status === '4' || status === 'Expired')     return REQUEST_STATUSES.Expired;
+  // Legacy alias
+  if (status === 'Active') return REQUEST_STATUSES.Pending;
+  return { variant: 'secondary', label: status === null || status === undefined ? 'Unknown' : String(status) };
 }
 
 // Format a Date or ISO string in the user's locale.
