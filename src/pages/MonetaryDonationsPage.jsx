@@ -26,6 +26,7 @@ const STATUS_META = {
 export default function MonetaryDonationsPage() {
   const { role } = useAuth();
   const isAdmin = (role || '').toLowerCase() === 'admin';
+  const isManager = isAdmin || (role || '').toLowerCase() === 'bloodbankmanager';
   const [history, setHistory] = useState([]);
   const [total, setTotal] = useState(null);
   const [banks, setBanks] = useState([]);
@@ -49,15 +50,40 @@ export default function MonetaryDonationsPage() {
   const load = async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const [h, t, b] = await Promise.allSettled([
+      const calls = [
         monetaryApi.mine(),
         monetaryApi.myTotal(),
         bloodBanksApi.listVerified(),
-      ]);
-      if (h.status === 'fulfilled') setHistory(Array.isArray(h.value.data) ? h.value.data : []);
+      ];
+      // Managers see donations for their own bank too (so the bank
+      // knows who is funding it). Admins use the dedicated /admin/monetary
+      // page; regular donors only see their own.
+      if (isManager) {
+        try {
+          const mineBank = await bloodBanksApi.mine();
+          const bankId = mineBank.data?.id ?? mineBank.data?.Id;
+          if (bankId) calls.push(monetaryApi.byBankDetail(bankId));
+        } catch { /* not a manager / no bank yet */ }
+      }
+
+      const results = await Promise.allSettled(calls);
+      const [h, t, b, bank] = results;
+      let historyList = h.status === 'fulfilled' && Array.isArray(h.value.data) ? h.value.data : [];
+      if (bank && bank.status === 'fulfilled' && Array.isArray(bank.value.data)) {
+        // Merge and dedupe by payment intent id so the manager sees
+        // both their own donations and donations others made to their bank.
+        const seen = new Set();
+        historyList = [...bank.value.data, ...historyList].filter((d) => {
+          const k = d.stripePaymentIntentId || d.StripePaymentIntentId || (d.id || d.Id);
+          if (seen.has(k)) return false;
+          seen.add(k);
+          return true;
+        });
+      }
+      setHistory(historyList);
       if (t.status === 'fulfilled') setTotal(t.value.data);
       if (b.status === 'fulfilled') setBanks(Array.isArray(b.value.data) ? b.value.data : []);
-      const firstErr = [h, t, b].find((r) => r.status === 'rejected');
+      const firstErr = results.find((r) => r.status === 'rejected');
       if (firstErr && !silent) setError(apiErrorMessage(firstErr.reason, 'Some data failed to load.'));
     } finally {
       if (!silent) setLoading(false);
@@ -216,12 +242,18 @@ export default function MonetaryDonationsPage() {
 
       {error && <Alert variant="warning">{error}</Alert>}
 
-      {/* <Alert variant="info" className="small">
+      {isManager && !isAdmin && (
+        <Alert variant="info" className="small">
+          <Badge bg="info" className="me-1">Manager view</Badge>
+          Showing <strong>donations sent to your bank</strong> by users, plus any you personally made.
+        </Alert>
+      )}
+
+      <Alert variant="info" className="small">
         💡 <strong>How it works:</strong> when you click "Donate", the backend creates a Stripe payment intent.
         After you complete the payment, Stripe notifies the backend (webhook) and the donation status changes
-        from <Badge bg="warning">Pending</Badge> to <Badge bg="success">Succeeded</Badge> automatically. No manual
-        approval is needed.
-      </Alert>*/}
+        from <Badge bg="warning">Pending</Badge> to <Badge bg="success">Succeeded</Badge> automatically.
+      </Alert>
 
       {pendingCount > 0 && (
         <Alert variant="warning" className="d-flex justify-content-between align-items-center">
