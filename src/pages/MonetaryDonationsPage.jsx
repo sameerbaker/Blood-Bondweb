@@ -257,11 +257,11 @@ export default function MonetaryDonationsPage() {
         </Alert>
       )}
 
-      <Alert variant="info" className="small">
+                                                {/*  <Alert variant="info" className="small">
         💡 <strong>How it works:</strong> when you click "Donate", the backend creates a Stripe payment intent.
         After you complete the payment, Stripe notifies the backend (webhook) and the donation status changes
         from <Badge bg="warning">Pending</Badge> to <Badge bg="success">Succeeded</Badge> automatically.
-      </Alert>
+      </Alert>*/}
 
       {pendingCount > 0 && (
         <Alert variant="warning" className="d-flex justify-content-between align-items-center">
