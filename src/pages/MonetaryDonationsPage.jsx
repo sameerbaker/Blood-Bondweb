@@ -8,6 +8,7 @@ import PageHeader from '../components/PageHeader';
 import Loading from '../components/Loading';
 import EmptyState from '../components/EmptyState';
 import { monetaryApi, bloodBanksApi } from '../api';
+import { getFreshIdempotencyKey } from '../api/client';
 import { apiErrorMessage } from '../utils/error';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -152,8 +153,15 @@ export default function MonetaryDonationsPage() {
     }
     setCreating(true);
     try {
-      // Backend expects: { amount: decimal, currency: string, bloodBankId: int? }
-      const payload = { amount: Number(form.amount), currency: form.currency };
+      // Backend expects: { amount: decimal, currency: string, bloodBankId: int?, idempotencyKey: string }
+      // The idempotency key collapses accidental retries (double-click,
+      // slow-network retry) into a single Stripe session — see
+      // MonetaryDonationService.CreatePaymentIntentAsync.
+      const payload = {
+        amount: Number(form.amount),
+        currency: form.currency,
+        idempotencyKey: getFreshIdempotencyKey('mon'),
+      };
       if (form.bloodBankId) payload.bloodBankId = Number(form.bloodBankId);
       const res = await monetaryApi.createIntent(payload);
       const data = res.data || {};

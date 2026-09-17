@@ -7,6 +7,7 @@ import PageHeader from '../components/PageHeader';
 import Loading from '../components/Loading';
 import EmptyState from '../components/EmptyState';
 import { bloodRequestsApi, bloodBanksApi } from '../api';
+import { getFreshIdempotencyKey } from '../api/client';
 import { apiErrorMessage } from '../utils/error';
 import {
   BLOOD_TYPES, URGENCY_LEVELS, bloodTypeLabel, urgencyMeta, requestStatusMeta, formatDate,
@@ -79,6 +80,9 @@ export default function BloodRequestsPage() {
         urgencyLevel: Number(form.urgencyLevel),
         city: form.city.trim(),
         notes: form.notes.trim() || null,
+        // Idempotency key — collapses double-click / retry into one
+        // request (see BloodRequestService.CreateAsync).
+        idempotencyKey: getFreshIdempotencyKey('req'),
       });
       toast.success('Request created.');
       setShowModal(false);

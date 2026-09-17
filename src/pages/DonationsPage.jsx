@@ -7,6 +7,7 @@ import PageHeader from '../components/PageHeader';
 import Loading from '../components/Loading';
 import EmptyState from '../components/EmptyState';
 import { donationsApi, bloodBanksApi } from '../api';
+import { getFreshIdempotencyKey } from '../api/client';
 import { apiErrorMessage } from '../utils/error';
 
 // Normalize the backend's DonationStatus (serialized as integer 0..4
@@ -109,6 +110,9 @@ export default function DonationsPage() {
         bloodBankId: Number(form.bloodBankId),
         scheduledDate: form.scheduledDate,
         notes: form.notes.trim() || null,
+        // Idempotency key — collapses double-click / retry into one
+        // appointment (see DonationService.ScheduleAsync).
+        idempotencyKey: getFreshIdempotencyKey('don'),
       });
       toast.success('Donation scheduled.');
       setShowModal(false);

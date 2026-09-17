@@ -11,6 +11,27 @@ const api = axios.create({
   timeout: 30000,
 });
 
+// RFC 4122 v4 UUID. The browser's crypto.randomUUID is the right tool;
+// we add a small fallback for older runtimes / test environments.
+function uuidv4() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
+// Generate a fresh idempotency key for one logical user action
+// (donation, monetary donation, blood request, etc.). The backend uses
+// (userId, idempotencyKey) as a uniqueness check so an accidental
+// double-click or a slow-network retry can never produce a duplicate
+// charge or appointment.
+export function getFreshIdempotencyKey(prefix = 'bb') {
+  return `${prefix}_${uuidv4()}`;
+}
+
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem(TOKEN_KEY);
   if (token) {
@@ -25,7 +46,6 @@ api.interceptors.response.use(
     if (error.response?.status === 401) {
       localStorage.removeItem(TOKEN_KEY);
       localStorage.removeItem(USER_KEY);
-      // Avoid redirect loops if we're already on auth pages
       const path = window.location.pathname;
       if (!path.startsWith('/login') && !path.startsWith('/register') && !path.startsWith('/forgot')) {
         window.location.replace('/login');
