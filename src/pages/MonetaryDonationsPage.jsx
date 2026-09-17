@@ -250,12 +250,12 @@ export default function MonetaryDonationsPage() {
 
       {error && <Alert variant="warning">{error}</Alert>}
 
-      {isManager && !isAdmin && (
+      {/* {isManager && !isAdmin && (
         <Alert variant="info" className="small">
           <Badge bg="info" className="me-1">Manager view</Badge>
           Showing <strong>donations sent to your bank</strong> by users, plus any you personally made.
         </Alert>
-      )}
+      )}*/}
 
                                                 {/*  <Alert variant="info" className="small">
         💡 <strong>How it works:</strong> when you click "Donate", the backend creates a Stripe payment intent.
